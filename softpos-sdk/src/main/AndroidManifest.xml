@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.NFC" />
+
+    <!--
+        Declared as not required so the library can be pulled into an app that also runs on
+        hardware without an NFC controller. SoftPos.nfcStatus() reports the runtime situation.
+    -->
+    <uses-feature
+        android:name="android.hardware.nfc"
+        android:required="false" />
+
+</manifest>

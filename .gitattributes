@@ -1,0 +1,19 @@
+# Normalise to LF in the repository; Git restores platform endings on checkout.
+* text=auto eol=lf
+
+# gradlew is executed by sh - CRLF would break it on Linux and macOS.
+gradlew text eol=lf
+*.sh text eol=lf
+
+# Windows scripts must keep CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch these.
+*.jar binary
+*.apk binary
+*.aab binary
+*.keystore binary
+*.png binary
+*.jpg binary
+*.webp binary

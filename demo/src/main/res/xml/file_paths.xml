@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- Exports are written to the cache so the OS can reclaim them; they hold masked data only. -->
+    <cache-path
+        name="exports"
+        path="exports/" />
+</paths>

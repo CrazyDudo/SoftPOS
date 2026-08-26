@@ -2,6 +2,9 @@
 
 **English** · [简体中文](README.zh-CN.md)
 
+[![CI](https://github.com/CrazyDudo/SoftPOS/actions/workflows/ci.yml/badge.svg)](https://github.com/CrazyDudo/SoftPOS/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 An Android SDK and demo app that read a contactless payment card over NFC, reduce the card data
 immediately, and record a basket locally.
 
@@ -59,6 +62,29 @@ the Android modules on with `-PforceAndroidModules=true`.
 The Gradle wrapper (8.11.1) is checked in, so a fresh clone needs only a JDK 17. The Android SDK
 path comes from `local.properties`, which is not checked in — Android Studio writes it on first
 open, or set `ANDROID_HOME`.
+
+### Continuous integration
+
+[`ci.yml`](.github/workflows/ci.yml) runs on every push and pull request to `main`:
+
+- **`core`** runs `:emv-core:test` with `ANDROID_HOME` and `ANDROID_SDK_ROOT` blanked, so the
+  Android modules are skipped entirely. That is deliberate: it keeps the "no Android SDK needed"
+  claim above honest instead of merely asserted.
+- **`package`** assembles the demo APK and the SDK AAR and uploads both as workflow artifacts.
+
+Both jobs verify the checked-in Gradle wrapper JAR against the published Gradle checksums before
+executing it.
+
+[`release.yml`](.github/workflows/release.yml) fires on a `v*` tag. It re-runs the tests, builds the
+same two artifacts under versioned names, and publishes a GitHub Release with them attached:
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+The demo APK is a **debug** build. The app carries no signing config, so a release APK would come
+out unsigned and could not be installed. The SDK is a library and needs no signing, so it ships as
+the release variant.
 
 ## The read flow
 

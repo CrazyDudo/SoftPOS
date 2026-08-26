@@ -2,6 +2,9 @@
 
 [English](README.md) · **简体中文**
 
+[![CI](https://github.com/CrazyDudo/SoftPOS/actions/workflows/ci.yml/badge.svg)](https://github.com/CrazyDudo/SoftPOS/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+
 一套 Android SDK 与演示应用：通过 NFC 读取非接触式支付卡，立即对卡片数据做脱敏处理，并在本地记录
 一笔购物车订单。
 
@@ -55,6 +58,26 @@ PDOL 响应里放什么、一笔交易何时允许改变状态——都住在这
 
 Gradle wrapper（8.11.1）已入库，全新 clone 只需要一个 JDK 17。Android SDK 路径来自
 `local.properties`，该文件不入库——Android Studio 首次打开时会写入，或者你自己设置 `ANDROID_HOME`。
+
+### 持续集成
+
+[`ci.yml`](.github/workflows/ci.yml) 在每次向 `main` 推送和提交 PR 时运行：
+
+- **`core`** 在清空 `ANDROID_HOME` 与 `ANDROID_SDK_ROOT` 的前提下跑 `:emv-core:test`，Android 模块
+  被完全跳过。这是刻意为之：它让上文"不需要 Android SDK"这句话是被验证过的，而不只是宣称。
+- **`package`** 构建 demo APK 与 SDK AAR，并把两者作为 workflow artifact 上传。
+
+两个 job 在执行入库的 Gradle wrapper JAR 之前，都会先用 Gradle 官方发布的校验和验证它。
+
+[`release.yml`](.github/workflows/release.yml) 由 `v*` 形式的 tag 触发。它会重跑测试，用带版本号的
+文件名构建同样那两个产物，并发布一个附带它们的 GitHub Release：
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+demo APK 是 **debug** 构建。该应用没有配置签名，release APK 出来会是未签名的、装不上；SDK 是
+library，不需要签名，因此以 release variant 发布。
 
 ## 读卡流程
 

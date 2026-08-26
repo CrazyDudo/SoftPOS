@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer push to the same branch supersedes an in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core:
+    name: emv-core tests (no Android SDK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # The wrapper JAR is checked in, so verify it against the published
+      # Gradle checksums before executing it.
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # ANDROID_HOME and ANDROID_SDK_ROOT are blanked deliberately. The runner
+      # image ships an Android SDK; hiding it makes settings.gradle.kts skip
+      # ':softpos-sdk' and ':demo', which is what proves the README's claim that
+      # emv-core builds and tests on a machine with no Android SDK at all.
+      - name: Run unit tests
+        env:
+          ANDROID_HOME: ''
+          ANDROID_SDK_ROOT: ''
+        run: ./gradlew :emv-core:test
+
+      - name: Upload test report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emv-core-test-report
+          path: emv-core/build/reports/tests/test
+          retention-days: 7
+
+  package:
+    name: Package APK and AAR
+    runs-on: ubuntu-latest
+    needs: core
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # The demo app has no signing config, so a release APK would come out
+      # unsigned and could not be installed. The debug APK is what someone
+      # trying the prototype actually wants. The SDK is a library and needs no
+      # signing, so it is built as release.
+      - name: Assemble
+        run: ./gradlew :demo:assembleDebug :softpos-sdk:assembleRelease
+
+      - name: Upload demo APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: demo-debug-apk
+          path: demo/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload SDK AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: softpos-sdk-aar
+          path: softpos-sdk/build/outputs/aar/*.aar
+          if-no-files-found: error
+          retention-days: 14

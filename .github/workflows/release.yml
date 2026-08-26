@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish release artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Validate Gradle wrapper
+        uses: gradle/actions/wrapper-validation@v4
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Nothing ships unless the core tests pass.
+      - name: Run unit tests
+        env:
+          ANDROID_HOME: ''
+          ANDROID_SDK_ROOT: ''
+        run: ./gradlew :emv-core:test
+
+      - name: Assemble
+        run: ./gradlew :demo:assembleDebug :softpos-sdk:assembleRelease
+
+      - name: Collect artifacts
+        id: collect
+        run: |
+          VERSION="${{ github.event.inputs.tag || github.ref_name }}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          mkdir -p dist
+          cp demo/build/outputs/apk/debug/*.apk "dist/softpos-demo-$VERSION-debug.apk"
+          cp softpos-sdk/build/outputs/aar/*.aar "dist/softpos-sdk-$VERSION.aar"
+          ls -la dist
+
+      - name: Write release notes preamble
+        run: |
+          cat > release-notes.md <<'NOTES'
+          > **This prototype takes no payments.**
+          > There is no acquirer, no authorisation, no clearing and no settlement. The card read
+          > stops after READ RECORD: no cryptogram is generated, no card is authenticated and no
+          > cardholder is verified. It is not built or assessed against PCI MPoC, PCI DSS or EMVCo
+          > certification. Use test cards or your own card.
+
+          ### Artifacts
+
+          | File | What it is |
+          |---|---|
+          | `softpos-demo-*-debug.apk` | Demo app, **debug build**. The app has no signing config, so a release APK would be unsigned and could not be installed. |
+          | `softpos-sdk-*.aar` | The `softpos-sdk` Android library, release variant. |
+
+          NOTES
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.collect.outputs.version }}" \
+            dist/* \
+            --title "${{ steps.collect.outputs.version }}" \
+            --notes-file release-notes.md \
+            --generate-notes

@@ -20,10 +20,10 @@ jobs:
     name: emv-core tests (no Android SDK)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
@@ -31,10 +31,10 @@ jobs:
       # The wrapper JAR is checked in, so verify it against the published
       # Gradle checksums before executing it.
       - name: Validate Gradle wrapper
-        uses: gradle/actions/wrapper-validation@v4
+        uses: gradle/actions/wrapper-validation@v6
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       # ANDROID_HOME and ANDROID_SDK_ROOT are blanked deliberately. The runner
       # image ships an Android SDK; hiding it makes settings.gradle.kts skip
@@ -48,7 +48,7 @@ jobs:
 
       - name: Upload test report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: emv-core-test-report
           path: emv-core/build/reports/tests/test
@@ -59,19 +59,19 @@ jobs:
     runs-on: ubuntu-latest
     needs: core
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '17'
 
       - name: Validate Gradle wrapper
-        uses: gradle/actions/wrapper-validation@v4
+        uses: gradle/actions/wrapper-validation@v6
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       # The demo app has no signing config, so a release APK would come out
       # unsigned and could not be installed. The debug APK is what someone
@@ -81,7 +81,7 @@ jobs:
         run: ./gradlew :demo:assembleDebug :softpos-sdk:assembleRelease
 
       - name: Upload demo APK
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: demo-debug-apk
           path: demo/build/outputs/apk/debug/*.apk
@@ -89,7 +89,7 @@ jobs:
           retention-days: 14
 
       - name: Upload SDK AAR
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: softpos-sdk-aar
           path: softpos-sdk/build/outputs/aar/*.aar

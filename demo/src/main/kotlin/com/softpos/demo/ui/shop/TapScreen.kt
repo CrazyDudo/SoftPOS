@@ -239,6 +239,21 @@ private fun CardSummary(card: RedactedCard) {
             LabelledValue("Records read", card.recordCount.toString())
             card.expired?.let { LabelledValue("Expired", if (it) "Yes" else "No") }
             card.panLuhnValid?.let { LabelledValue("Luhn check", if (it) "Pass" else "Fail") }
+            HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
+            LabelledValue("Authentication", card.authentication.label)
+            Text(
+                text = card.authenticationDetail,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            LabelledValue("Cardholder verification", card.cvm.label)
+            if (card.cvmRequiredByReader) {
+                Text(
+                    text = "Amount reached the reader's CVM limit",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

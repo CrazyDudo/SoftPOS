@@ -107,16 +107,18 @@ sealed interface CapkValidation {
 /**
  * Certification Authority Public Key table.
  *
- * ## This table is not wired to anything yet
+ * ## What loading it does
  *
  * A CAPK table is the input to offline data authentication - SDA, DDA and CDA (EMV 4.4 Book 2,
- * sections 5, 6 and 6.6). **This project performs no offline data authentication.** The read flow
- * parses the certificate elements a card returns (`8F`, `90`, `92`, `9F32`, `93`, `9F46`, `9F47`,
- * `9F48`, `9F4B`) into the TLV database and never verifies a single signature.
+ * sections 5, 6 and 6.6). With keys loaded, [com.softpos.emv.flow.EmvReadFlow] verifies SDA and
+ * fast DDA against them: the issuer certificate (`90`) is recovered with the CA key the card names
+ * in `8F`, the ICC certificate (`9F46`) with the issuer key, and then either the Signed Static
+ * Application Data (`93`) or the Signed Dynamic Application Data (`9F4B`) is checked. The outcome
+ * is on [com.softpos.emv.model.RawCardData.authentication]. CDA is out of reach because its
+ * signature covers a GENERATE AC response, which this project never requests.
  *
- * So populating this registry does not make card authentication work, and a card that reads
- * successfully has not been proven genuine. The table exists so that the key management, lookup and
- * validation are in place and tested for whoever implements ODA later.
+ * With the table empty - the default - every read reports authentication as not performed, and a
+ * card that reads successfully has not been proven genuine.
  *
  * ## Why no keys ship with this project
  *

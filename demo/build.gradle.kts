@@ -14,8 +14,8 @@ android {
         targetSdk = 35
         // versionCode must increase with every release Android installs over the previous one;
         // versionName is what the release tag and the GitHub Release carry.
-        versionCode = 2
-        versionName = "0.1.1"
+        versionCode = 3
+        versionName = "0.2.0"
     }
 
     buildFeatures {

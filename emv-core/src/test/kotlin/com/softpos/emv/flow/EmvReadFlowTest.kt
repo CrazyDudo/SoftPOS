@@ -2,14 +2,26 @@ package com.softpos.emv.flow
 
 import com.softpos.emv.apdu.ApduTransceiver
 import com.softpos.emv.apdu.ApduTransportException
+import com.softpos.emv.capk.CapkRegistry
+import com.softpos.emv.cvm.CvmOutcome
 import com.softpos.emv.model.CardScheme
 import com.softpos.emv.model.EmvKernel
 import com.softpos.emv.model.ExpiryDate
+import com.softpos.emv.oda.CardAuthentication
+import com.softpos.emv.oda.OdaFailureReason
+import com.softpos.emv.oda.OdaMethod
+import com.softpos.emv.oda.OdaResult
+import com.softpos.emv.oda.OdaSkipReason
+import com.softpos.emv.oda.TestPki
+import com.softpos.emv.terminal.ReaderLimits
 import com.softpos.emv.terminal.TerminalProfile
 import com.softpos.emv.testing.SimulatedApplication
 import com.softpos.emv.testing.SimulatedCard
 import com.softpos.emv.testing.TestCards
+import com.softpos.emv.tlv.BerTlvParser
 import com.softpos.emv.tlv.EmvTags
+import com.softpos.emv.util.Hex
+import com.softpos.emv.util.hexToBytes
 import java.security.SecureRandom
 import java.time.Clock
 import java.time.Instant
@@ -386,5 +398,205 @@ class EmvReadFlowTest {
         assertNull(card.tlv[EmvTags.CARDHOLDER_NAME])
         // Non-sensitive elements survive so the record stays useful for diagnostics.
         assertNotNull(card.tlv[EmvTags.AIP])
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Entry Point pre-processing (EMV Contactless Book B section 3.1.1)
+    // ---------------------------------------------------------------------------------------
+
+    private val limitedTerminal = terminal.copy(
+        readerLimits = ReaderLimits(
+            contactlessTransactionLimitMinor = 10_000,
+            cvmRequiredLimitMinor = 5_000,
+            contactlessFloorLimitMinor = 2_000,
+        ),
+    )
+
+    @Test
+    fun `an amount at the transaction limit is refused before the card is touched`() {
+        val card = TestCards.visaCard()
+
+        val failure = assertIs<EmvReadResult.Failure>(EmvReadFlow(card, limitedTerminal, 10_000).execute())
+
+        assertEquals(ReadStage.ENTRY_POINT, failure.stage)
+        assertEquals(ReadErrorCode.AMOUNT_NOT_ALLOWED, failure.code)
+        assertTrue(card.commands.isEmpty(), "no APDU may be sent for a refused amount")
+    }
+
+    @Test
+    fun `the cvm and floor limits show up in the ttq the card receives`() {
+        val card = TestCards.visaCard()
+
+        val success = assertIs<EmvReadResult.Success>(EmvReadFlow(card, limitedTerminal, 6_000).execute())
+
+        val gpo = card.commands.first { it.startsWith("80A8") }
+        assertTrue(gpo.contains("28C00000"), "TTQ should carry CVM required and online cryptogram required: $gpo")
+        success.card.use {
+            val redacted = it.redact()
+            assertTrue(redacted.cvmRequiredByReader)
+            assertTrue(redacted.onlineCryptogramRequired)
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Offline data authentication
+    // ---------------------------------------------------------------------------------------
+
+    private val pki = TestPki()
+    private val capks = CapkRegistry(listOf(pki.capk))
+
+    /** TLV with a correctly encoded length, so nobody has to count hex characters. */
+    private fun tlv(tagHex: String, valueHex: String): String =
+        tagHex + Hex.encode(BerTlvParser.encodeLength(valueHex.length / 2)) + valueHex
+
+    private fun record(vararg elements: String): String = tlv("70", elements.joinToString(""))
+
+    /**
+     * A Visa card that does fast DDA: AIP 3800 (DDA, CVM, TRM), records 1-3 of SFI 2 covered by
+     * ODA, certificates in records 2 and 3, and a GPO response carrying 9F4B computed for the fixed
+     * Unpredictable Number ABABABAB, amount 1234 and currency 0840 the test terminal produces.
+     */
+    private fun fddaCard(tamperStaticData: Boolean = false, aipHex: String = "3800", withSsad: Boolean = false): SimulatedCard {
+        val record1 = record(
+            tlv("5A", TestCards.VISA_PAN),
+            tlv("5F24", "251231"),
+            tlv("5F20", "43415244484F4C4445522F54455354"),
+        )
+        val issuerCert = pki.issuerCertificate(TestCards.VISA_PAN)
+        val record2 = record(
+            tlv("8F", "92"),
+            tlv("90", Hex.encode(issuerCert.certificate)),
+            tlv("92", Hex.encode(assertNotNull(issuerCert.remainder))),
+            tlv("9F32", Hex.encode(issuerCert.exponent)),
+        )
+
+        // The AFL below covers SFI 2 records 1 and 2 with ODA, so the static data to be
+        // authenticated is the value of those two 70 templates in that order. Record 3 holds the
+        // ICC certificate and sits outside the range - a certificate cannot cover its own bytes,
+        // which is why issuers lay cards out this way.
+        fun body(recordHex: String) = BerTlvParser.parse(recordHex.hexToBytes()).single().value
+        val staticData = body(record1) + body(record2)
+
+        val iccCert = pki.iccCertificate(TestCards.VISA_PAN, staticData)
+        val record3 = if (withSsad) {
+            record(tlv("93", Hex.encode(pki.signedStaticData(staticData))))
+        } else {
+            record(
+                tlv("9F46", Hex.encode(iccCert.certificate)),
+                tlv("9F47", Hex.encode(iccCert.exponent)),
+                tlv("9F48", Hex.encode(assertNotNull(iccCert.remainder))),
+            )
+        }
+
+        val ctq = "8000"
+        val cardAuthenticationData = "01" + "11223344" + ctq
+        // What the test terminal sends: fixed Unpredictable Number, amount 1234 as n12, USD.
+        val terminalDynamicData = "ABABABAB" + "000000001234" + "0840"
+        val sdad = pki.signedDynamicData(
+            iccDynamicNumberHex = "0102030405060708",
+            trailingHex = ctq,
+            terminalDynamicData = (terminalDynamicData + cardAuthenticationData).hexToBytes(),
+        )
+
+        val gpo = tlv(
+            "77",
+            tlv("82", aipHex) +
+                // SFI 2 records 1-3 with two ODA records; SFI 1 record 1 (track 2) outside ODA.
+                tlv("94", "10010302" + "08010100") +
+                tlv("9F6C", ctq) +
+                tlv("9F69", cardAuthenticationData) +
+                tlv("9F4B", Hex.encode(sdad)),
+        )
+
+        // Tampering flips the last byte of record 2, which is the issuer exponent's last byte.
+        val servedRecord2 = if (tamperStaticData) record2.dropLast(2) + "00" else record2
+        val records = mapOf(
+            (2 to 1) to record1,
+            (2 to 2) to servedRecord2,
+            (2 to 3) to record3,
+            (1 to 1) to TestCards.RECORD_SFI1_REC1,
+        )
+        return SimulatedCard(
+            TestCards.PPSE_FCI_VISA,
+            mapOf(TestCards.VISA_AID to SimulatedApplication(TestCards.VISA_ADF_FCI, gpo, records)),
+        )
+    }
+
+    private fun authenticatingFlow(card: ApduTransceiver, amountMinor: Long = 1234) =
+        EmvReadFlow(card, terminal, amountMinor, capkRegistry = capks)
+
+    @Test
+    fun `fast dda authenticates a genuine visa card end to end`() {
+        val success = assertIs<EmvReadResult.Success>(authenticatingFlow(fddaCard()).execute())
+
+        success.card.use { card ->
+            val ok = assertIs<OdaResult.Authenticated>(card.authentication, card.authentication.describe())
+            assertEquals(OdaMethod.DDA, ok.method)
+            assertEquals(true, card.ddaSupported)
+            assertEquals(CvmOutcome.ONLINE_PIN_REQUIRED, card.cvm.outcome)
+            val redacted = card.redact()
+            assertEquals(CardAuthentication.DDA_AUTHENTICATED, redacted.authentication)
+            assertTrue(redacted.authenticationDetail.contains("0102030405060708"))
+        }
+    }
+
+    @Test
+    fun `terminal capabilities claim dda only when a capk table is loaded`() {
+        val withKeys = TestCards.visaCard()
+        authenticatingFlow(withKeys).execute()
+        val without = TestCards.visaCard()
+        flow(without).execute()
+
+        // The test PDOL asks only for TTQ and amount, so 9F33 is checked through the tag source.
+        assertEquals("2008C0", Hex.encode(terminal.terminalCapabilities(true)))
+        assertEquals("200800", Hex.encode(terminal.terminalCapabilities(false)))
+        assertTrue(withKeys.commands.isNotEmpty() && without.commands.isNotEmpty())
+    }
+
+    @Test
+    fun `a tampered record fails authentication and the read still completes`() {
+        val success = assertIs<EmvReadResult.Success>(authenticatingFlow(fddaCard(tamperStaticData = true)).execute())
+
+        success.card.use { card ->
+            val failed = assertIs<OdaResult.Failed>(card.authentication)
+            assertEquals(OdaFailureReason.HASH_MISMATCH, failed.reason)
+            assertEquals(CardAuthentication.FAILED, card.redact().authentication)
+        }
+        assertTrue(success.warnings.any { it.contains("Offline data authentication") })
+    }
+
+    @Test
+    fun `sda authenticates when the card offers only static data`() {
+        val success = assertIs<EmvReadResult.Success>(
+            authenticatingFlow(fddaCard(aipHex = "5800", withSsad = true)).execute(),
+        )
+
+        success.card.use { card ->
+            val ok = assertIs<OdaResult.Authenticated>(card.authentication, card.authentication.describe())
+            assertEquals(OdaMethod.SDA, ok.method)
+        }
+    }
+
+    @Test
+    fun `without a capk table authentication is reported as not performed`() {
+        val success = assertIs<EmvReadResult.Success>(flow(fddaCard()).execute())
+
+        success.card.use { card ->
+            assertEquals(OdaSkipReason.NO_CAPK_TABLE, assertIs<OdaResult.NotPerformed>(card.authentication).reason)
+            assertEquals(CardAuthentication.NOT_PERFORMED, card.redact().authentication)
+        }
+    }
+
+    @Test
+    fun `the plain test card reports why it was not authenticated`() {
+        // AIP 1980 claims CDA only, which needs GENERATE AC.
+        val success = assertIs<EmvReadResult.Success>(authenticatingFlow(TestCards.visaCard()).execute())
+
+        success.card.use { card ->
+            assertEquals(OdaSkipReason.CDA_ONLY, assertIs<OdaResult.NotPerformed>(card.authentication).reason)
+            assertEquals(true, card.cdaSupported)
+            assertEquals(false, card.ddaSupported)
+            assertEquals(true, card.cvmSupported)
+        }
     }
 }

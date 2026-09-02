@@ -36,9 +36,9 @@ data class TagInfo(
  * Registry of the EMV data elements this prototype touches. References are to EMV 4.4 Book 3
  * Annex A unless noted otherwise.
  *
- * TODO: this covers the read path only. Elements needed for GENERATE AC, terminal risk management
- *  and offline data authentication are deliberately absent - see [com.softpos.emv.flow.EmvReadFlow]
- *  for the scope boundary.
+ * TODO: this covers the read path, offline data authentication and CVM selection. Elements needed
+ *  for GENERATE AC and terminal risk management are deliberately absent - see
+ *  [com.softpos.emv.flow.EmvReadFlow] for the scope boundary.
  */
 object EmvTags {
 
@@ -92,7 +92,7 @@ object EmvTags {
     val ISSUER_ACTION_CODE_DENIAL = Tag.of("9F0E")
     val ISSUER_ACTION_CODE_ONLINE = Tag.of("9F0F")
 
-    // --- Offline data authentication (parsed, never verified - see EmvReadFlow) ------------------
+    // --- Offline data authentication - see com.softpos.emv.oda ----------------------------------
     val CA_PUBLIC_KEY_INDEX = Tag.of("8F")
     val ISSUER_PUBLIC_KEY_CERTIFICATE = Tag.of("90")
     val ISSUER_PUBLIC_KEY_REMAINDER = Tag.of("92")
@@ -103,6 +103,14 @@ object EmvTags {
     val ICC_PUBLIC_KEY_REMAINDER = Tag.of("9F48")
     val SDA_TAG_LIST = Tag.of("9F4A")
     val SIGNED_DYNAMIC_APPLICATION_DATA = Tag.of("9F4B")
+    val DATA_AUTHENTICATION_CODE = Tag.of("9F45")
+    val ICC_DYNAMIC_NUMBER = Tag.of("9F4C")
+
+    /** Card Authentication Related Data, fDDA input from the card. EMV Contactless Book C-3. */
+    val CARD_AUTHENTICATION_RELATED_DATA = Tag.of("9F69")
+
+    /** Kernel Identifier inside a PPSE application template. EMV Contactless Book B. */
+    val KERNEL_IDENTIFIER = Tag.of("9F2A")
 
     // --- Terminal supplied ----------------------------------------------------------------------
     val AMOUNT_AUTHORISED = Tag.of("9F02")
@@ -186,6 +194,10 @@ object EmvTags {
         TagInfo(ICC_PUBLIC_KEY_REMAINDER, "ICC Public Key Remainder", TagFormat.BINARY),
         TagInfo(SDA_TAG_LIST, "Static Data Authentication Tag List", TagFormat.BINARY),
         TagInfo(SIGNED_DYNAMIC_APPLICATION_DATA, "Signed Dynamic Application Data", TagFormat.BINARY),
+        TagInfo(DATA_AUTHENTICATION_CODE, "Data Authentication Code", TagFormat.BINARY),
+        TagInfo(ICC_DYNAMIC_NUMBER, "ICC Dynamic Number", TagFormat.BINARY),
+        TagInfo(CARD_AUTHENTICATION_RELATED_DATA, "Card Authentication Related Data", TagFormat.BINARY),
+        TagInfo(KERNEL_IDENTIFIER, "Kernel Identifier", TagFormat.BINARY),
 
         TagInfo(AMOUNT_AUTHORISED, "Amount, Authorised (Numeric)", TagFormat.NUMERIC),
         TagInfo(AMOUNT_OTHER, "Amount, Other (Numeric)", TagFormat.NUMERIC),

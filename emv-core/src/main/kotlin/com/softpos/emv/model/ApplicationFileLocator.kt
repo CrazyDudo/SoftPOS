@@ -4,7 +4,8 @@ package com.softpos.emv.model
  * One entry of the Application File Locator (tag 94).
  *
  * @param odaRecordCount how many records starting at [firstRecord] take part in offline data
- *   authentication. Parsed and surfaced, but never acted on - this prototype performs no ODA.
+ *   authentication. The read flow retains exactly those records, as returned, to form the static
+ *   data to be authenticated (EMV 4.4 Book 3, section 10.3).
  */
 data class AflEntry(
     val sfi: Int,

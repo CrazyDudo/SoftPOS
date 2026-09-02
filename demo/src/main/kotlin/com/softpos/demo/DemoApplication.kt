@@ -2,6 +2,7 @@ package com.softpos.demo
 
 import android.app.Application
 import android.content.Context
+import android.util.Log
 import com.softpos.sdk.SoftPos
 import com.softpos.sdk.SoftPosConfig
 import com.softpos.sdk.data.ProductEntity
@@ -59,7 +60,12 @@ class DemoApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         container = DemoContainer(this)
-        applicationScope.launch { container.seedCatalogIfEmpty() }
+        applicationScope.launch {
+            container.seedCatalogIfEmpty()
+            // Signals only - see DeviceIntegrity for why this is not attestation. Logged rather
+            // than enforced because a prototype that refuses to run on an emulator is untestable.
+            Log.i("SoftPosDemo", "Device integrity: " + container.softPos.deviceIntegrity().describe())
+        }
     }
 }
 

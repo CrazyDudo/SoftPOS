@@ -40,6 +40,9 @@ jobs:
           ANDROID_SDK_ROOT: ''
         run: ./gradlew :emv-core:test
 
+      - name: Run SDK unit tests
+        run: ./gradlew :softpos-sdk:testReleaseUnitTest
+
       - name: Assemble
         run: ./gradlew :demo:assembleDebug :softpos-sdk:assembleRelease
 

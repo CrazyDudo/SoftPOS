@@ -70,7 +70,9 @@ open, or set `ANDROID_HOME`.
 - **`core`** runs `:emv-core:test` with `ANDROID_HOME` and `ANDROID_SDK_ROOT` blanked, so the
   Android modules are skipped entirely. That is deliberate: it keeps the "no Android SDK needed"
   claim above honest instead of merely asserted.
-- **`package`** assembles the demo APK and the SDK AAR and uploads both as workflow artifacts.
+- **`package`** runs the SDK's own unit tests, which need the Android SDK on the classpath and so
+  cannot live in `core`, then assembles the demo APK and the SDK AAR and uploads both as workflow
+  artifacts.
 
 Both jobs verify the checked-in Gradle wrapper JAR against the published Gradle checksums before
 executing it.
@@ -113,7 +115,10 @@ The brief draws a line between raw data used transiently in memory and reduced d
 disk. That line is enforced by types, not by convention:
 
 - **`Pan` holds digits in a `CharArray`**, not a `String`, so `close()` can actually overwrite them.
-  Access to the full number is scoped through `reveal { }`. `toString()` never renders digits.
+  `reveal { }` hands out a view over that live buffer rather than a copy of it, and `withBytes { }`
+  gives cryptographic consumers a `ByteArray` that is zeroed in a `finally`. Decoding does not route
+  the digits through a `String` on the way in either: tag `5A` and tag `57` are expanded into
+  wipeable buffers. `toString()` never renders digits.
 - **`RawCardData` is `AutoCloseable`** and wipes the PAN, the track data and every sensitive TLV
   value. Its `applicationLabel` and `cardholderName` are `String`s and cannot be wiped — that
   limitation is documented on the class rather than papered over.
@@ -134,6 +139,12 @@ disk. That line is enforced by types, not by convention:
   rule: keep the last four digits and nothing else.
 - **`SoftPos.wipeAllCardData()`** deletes the Keystore keys, which makes every stored fingerprint
   and blob permanently unreadable.
+- **Card-supplied text is stripped of control characters where it is decoded.** The application
+  label comes from the card, and one carrying a newline or a NUL would corrupt every log line, CSV
+  row and JSON string it later reaches.
+- **CSV exports neutralise spreadsheet formulas.** That same label is attacker-chosen text landing
+  in a file someone opens in Excel, so a field beginning `=`, `+`, `-` or `@` is prefixed with an
+  apostrophe and displayed rather than evaluated.
 
 ## Transaction state machine
 

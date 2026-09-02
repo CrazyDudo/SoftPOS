@@ -44,9 +44,19 @@ class TlvDatabase private constructor(
     /** Reads a BCD (`n` format) value such as 9F02 Amount, Authorised. */
     fun bcd(tag: Tag): Long? = get(tag)?.bcdToLongOrNull()
 
+    /**
+     * Card-supplied text, e.g. tag 50 Application Label or tag 9F12 Application Preferred Name.
+     *
+     * Control characters are dropped rather than merely trimmed. The card chooses these bytes, and
+     * the resulting string travels a long way - into a log line, a CSV cell, a JSON string and a
+     * label on screen. A label carrying an embedded newline or a NUL corrupts every one of those,
+     * and no legitimate label needs one. C0 (`00`-`1F`), DEL and C1 (`80`-`9F`) go; printable
+     * ASCII and printable Latin-1 stay.
+     */
     fun text(tag: Tag): String? = get(tag)
         ?.toString(Charsets.ISO_8859_1)
-        ?.trim { it <= ' ' }
+        ?.filter { it.code in 0x20..0x7E || it.code >= 0xA0 }
+        ?.trim()
         ?.takeIf { it.isNotEmpty() }
 
     /**

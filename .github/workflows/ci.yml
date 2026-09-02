@@ -77,6 +77,11 @@ jobs:
       # unsigned and could not be installed. The debug APK is what someone
       # trying the prototype actually wants. The SDK is a library and needs no
       # signing, so it is built as release.
+      # The SDK's own unit tests need the Android SDK on the classpath, so they run here rather
+      # than in the 'core' job, which deliberately has none.
+      - name: Run SDK unit tests
+        run: ./gradlew :softpos-sdk:testReleaseUnitTest
+
       - name: Assemble
         run: ./gradlew :demo:assembleDebug :softpos-sdk:assembleRelease
 

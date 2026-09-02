@@ -18,6 +18,7 @@ import com.softpos.sdk.peripheral.UnavailablePeripheral
 import com.softpos.sdk.repository.CatalogRepository
 import com.softpos.sdk.repository.TransactionRepository
 import com.softpos.sdk.security.CardVault
+import com.softpos.sdk.security.KeySecurityLevel
 import com.softpos.sdk.security.KeystoreCryptoService
 import java.time.Clock
 
@@ -135,7 +136,17 @@ class SoftPos private constructor(
 
     fun nfcAvailability(activity: Activity): NfcAvailability = cardReader.availability(activity)
 
-    /** True when the AES key sits in a dedicated secure element rather than the TEE. */
+    /**
+     * Where the Keystore key protecting card-derived data actually lives.
+     *
+     * [KeySecurityLevel.UNKNOWN] until the first card read, which is when the key is generated.
+     */
+    fun keySecurityLevel(): KeySecurityLevel = crypto.keySecurityLevel()
+
+    /**
+     * True when the AES key sits in a dedicated secure element rather than the TEE. Reports false
+     * below API 31 even where StrongBox is in use - [keySecurityLevel] is the honest version.
+     */
     fun isStrongBoxBacked(): Boolean = crypto.isStrongBoxBacked()
 
     fun formatAmount(minorUnits: Long): String = config.terminalProfile.formatAmount(minorUnits)

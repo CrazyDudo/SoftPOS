@@ -65,7 +65,8 @@ Gradle wrapper（8.11.1）已入库，全新 clone 只需要一个 JDK 17。Andr
 
 - **`core`** 在清空 `ANDROID_HOME` 与 `ANDROID_SDK_ROOT` 的前提下跑 `:emv-core:test`，Android 模块
   被完全跳过。这是刻意为之：它让上文"不需要 Android SDK"这句话是被验证过的，而不只是宣称。
-- **`package`** 构建 demo APK 与 SDK AAR，并把两者作为 workflow artifact 上传。
+- **`package`** 先跑 SDK 自身的单元测试（它们需要 Android SDK 在 classpath 上，因此不能放进
+  `core`），再构建 demo APK 与 SDK AAR，并把两者作为 workflow artifact 上传。
 
 两个 job 在执行入库的 Gradle wrapper JAR 之前，都会先用 Gradle 官方发布的校验和验证它。
 
@@ -105,8 +106,10 @@ Book B §3.3 的非接触式入口点行为：
 项目要求在"内存中短暂使用的原始数据"与"落盘的脱敏数据"之间划一条线。这条线由类型强制，而不是靠
 约定：
 
-- **`Pan` 用 `CharArray` 而非 `String` 保存数字**，这样 `close()` 才真的能把它覆写掉。对完整卡号
-  的访问被限制在 `reveal { }` 作用域内。`toString()` 永远不会渲染出数字。
+- **`Pan` 用 `CharArray` 而非 `String` 保存数字**，这样 `close()` 才真的能把它覆写掉。`reveal { }`
+  交出的是那个活动缓冲区的视图而不是副本；需要字节的加密调用方用 `withBytes { }`，它会在
+  `finally` 里把缓冲区清零。解码路径同样不经过 `String`：tag `5A` 与 tag `57` 都被展开进可擦除的
+  缓冲区。`toString()` 永远不会渲染出数字。
 - **`RawCardData` 实现 `AutoCloseable`**，会擦除 PAN、磁道数据以及每一个敏感 TLV 值。它的
   `applicationLabel` 与 `cardholderName` 是 `String`，无法擦除——这个局限被写在类文档里，而不是
   被掩盖过去。
@@ -122,6 +125,10 @@ Book B §3.3 的非接触式入口点行为：
 - **`persistEncryptedPan` 默认关闭。** 打开它会把 AES-256-GCM 密文存在一个 Keystore 密钥之下——
   那是可还原的数据，风险性质完全不同。默认值实现的是项目要求的规则：只保留后四位，别的都不留。
 - **`SoftPos.wipeAllCardData()`** 会删除 Keystore 密钥，从而让已存储的每一个指纹和密文块永久不可读。
+- **卡片提供的文本在解码处就剥掉控制字符。** 应用标签由卡片决定，带换行或 NUL 的标签会污染它之后
+  流经的每一条日志、每一行 CSV 和每一个 JSON 字符串。
+- **CSV 导出会中和表格公式。** 同一个标签是攻击者可控的文本，最终落进一个会被 Excel 打开的文件，
+  因此以 `=`、`+`、`-`、`@` 开头的字段会被加上单引号前缀，从而被显示而不是被求值。
 
 ## 交易状态机
 

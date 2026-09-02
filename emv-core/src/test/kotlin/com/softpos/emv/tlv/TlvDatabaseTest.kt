@@ -23,6 +23,17 @@ class TlvDatabaseTest {
     }
 
     @Test
+    fun `text drops control characters a card embedded in a label`() {
+        // 'V' 'I' NUL 'S' LF 'A' - a label the card is free to choose, and one that would otherwise
+        // break every log line, CSV cell and JSON string it later lands in.
+        val db = TlvDatabase.builder()
+            .put(EmvTags.APPLICATION_LABEL, byteArrayOf(0x56, 0x49, 0x00, 0x53, 0x0A, 0x41))
+            .build()
+
+        assertEquals("VISA", db.text(EmvTags.APPLICATION_LABEL))
+    }
+
+    @Test
     fun `keeps duplicates in arrival order`() {
         val db = TlvDatabase.parse(TestCards.PPSE_FCI_TWO_APPS.hexToBytes())
 

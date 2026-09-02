@@ -37,14 +37,15 @@ class CardVault(
         raw.use { card ->
             val pan = card.pan
 
+            // withBytes, not reveal { it.toString().toByteArray() }: the latter leaves a String and
+            // a ByteArray holding the PAN in the heap that nothing overwrites, which would undo the
+            // wiping this class exists to guarantee. withBytes zeroes its buffer in a finally.
             val fingerprint = pan?.let {
-                runCatching { it.reveal { digits -> crypto.fingerprint(digits.toString().toByteArray()) } }
-                    .getOrNull()
+                runCatching { it.withBytes(crypto::fingerprint) }.getOrNull()
             }
 
             val encryptedPan = if (config.persistEncryptedPan && pan != null) {
-                runCatching { pan.reveal { digits -> crypto.encryptToBase64(digits.toString().toByteArray()) } }
-                    .getOrNull()
+                runCatching { pan.withBytes(crypto::encryptToBase64) }.getOrNull()
             } else {
                 null
             }

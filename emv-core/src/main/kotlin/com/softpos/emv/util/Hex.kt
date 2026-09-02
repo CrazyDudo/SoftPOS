@@ -34,6 +34,23 @@ object Hex {
         return out
     }
 
+    /**
+     * Hex into a caller-owned [CharArray].
+     *
+     * [encode] returns a `String`, which can never be overwritten. A decoder working on sensitive
+     * bytes - Track 2 Equivalent Data reproduces a full PAN - needs a buffer it can wipe once it
+     * has copied out the fields it wants, and that is what this returns.
+     */
+    fun encodeToChars(bytes: ByteArray): CharArray {
+        val out = CharArray(bytes.size * 2)
+        for (i in bytes.indices) {
+            val v = bytes[i].toInt() and 0xFF
+            out[i * 2] = DIGITS[v ushr 4]
+            out[i * 2 + 1] = DIGITS[v and 0x0F]
+        }
+        return out
+    }
+
     /** Renders bytes as `A0 00 00 00 03 10 10`, which is far easier to eyeball in an APDU log. */
     fun spaced(bytes: ByteArray): String = encode(bytes).chunked(2).joinToString(" ")
 }
@@ -74,19 +91,43 @@ fun longToBcd(value: Long, length: Int): ByteArray {
 }
 
 /**
- * Expands packed BCD into its digit string, dropping the trailing 'F' nibbles EMV uses as padding
- * (see EMV 4.4 Book 3, Annex A, format `cn`). Returns null on a non-digit nibble.
+ * Expands packed BCD into its digit characters, dropping the trailing 'F' nibbles EMV uses as
+ * padding (see EMV 4.4 Book 3, Annex A, format `cn`). Returns null on a non-digit nibble.
+ *
+ * Returns a caller-owned [CharArray] rather than a `String` so that a decoder handling a sensitive
+ * element - tag 5A is a full PAN - can overwrite the digits when it is done. A `String` cannot be
+ * overwritten and would leave them in the heap until garbage collection, which is exactly the
+ * lifetime problem [com.softpos.emv.model.Pan] exists to avoid.
  */
-fun ByteArray.cnToDigitsOrNull(): String? {
-    val sb = StringBuilder(size * 2)
+fun ByteArray.cnToCharsOrNull(): CharArray? {
+    val out = CharArray(size * 2)
+    var i = 0
     for (b in this) {
-        val hi = (b.toInt() ushr 4) and 0x0F
-        val lo = b.toInt() and 0x0F
-        sb.append(nibbleChar(hi) ?: return null)
-        sb.append(nibbleChar(lo) ?: return null)
+        val hi = nibbleChar((b.toInt() ushr 4) and 0x0F)
+        val lo = nibbleChar(b.toInt() and 0x0F)
+        if (hi == null || lo == null) {
+            out.fill('\u0000')
+            return null
+        }
+        out[i++] = hi
+        out[i++] = lo
     }
-    return sb.toString().trimEnd('F')
+
+    var end = out.size
+    while (end > 0 && out[end - 1] == 'F') end--
+    if (end == out.size) return out
+
+    val trimmed = out.copyOf(end)
+    out.fill('\u0000')
+    return trimmed
 }
+
+/**
+ * String form of [cnToCharsOrNull], for elements that are not sensitive - tag 5F24 (expiry), for
+ * instance. Never call this on a PAN: use [cnToCharsOrNull] and wipe the result.
+ */
+fun ByteArray.cnToDigitsOrNull(): String? =
+    cnToCharsOrNull()?.let { chars -> String(chars).also { chars.fill('\u0000') } }
 
 private fun nibbleChar(n: Int): Char? = when {
     n in 0..9 -> '0' + n

@@ -12,10 +12,10 @@ android {
         applicationId = "com.softpos.demo"
         minSdk = 24
         targetSdk = 35
-        // Initial values for a project that has never been released. Set these to whatever the
-        // first real release should carry.
-        versionCode = 1
-        versionName = "0.1.0"
+        // versionCode must increase with every release Android installs over the previous one;
+        // versionName is what the release tag and the GitHub Release carry.
+        versionCode = 2
+        versionName = "0.1.1"
     }
 
     buildFeatures {

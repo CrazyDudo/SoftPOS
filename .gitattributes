@@ -5,6 +5,12 @@
 gradlew text eol=lf
 *.sh text eol=lf
 
+# Source is text even if a stray control byte gets in. Without this, one NUL anywhere in a file
+# makes git call the whole thing binary, and it then shows no diff and no blame for it - which is
+# how a raw NUL sat unnoticed inside a char literal in Pan.kt and Track2Data.kt until v0.1.1.
+*.kt text diff=java
+*.kts text diff=java
+
 # Windows scripts must keep CRLF.
 *.bat text eol=crlf
 *.cmd text eol=crlf

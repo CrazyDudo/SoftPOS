@@ -133,6 +133,60 @@ class PanTest {
 
         assertEquals("4761739001010010", pan.reveal { it.toString() })
     }
+
+    @Test
+    fun `reveal hands out a view of the live buffer rather than a copy`() {
+        val pan = assertNotNull(Pan.of("4761739001010010"))
+
+        // Retaining the sequence is exactly what the documentation forbids. It is done here to
+        // prove the wipe reaches it: a copy would still read as the card number afterwards.
+        val retained = pan.reveal { it }
+        assertEquals("4761739001010010", retained.toString())
+
+        pan.close()
+
+        assertFalse(retained.toString().contains('4'))
+    }
+
+    @Test
+    fun `withBytes zeroes its buffer once the block returns`() {
+        val pan = assertNotNull(Pan.of("4761739001010010"))
+        var retained: ByteArray? = null
+
+        pan.withBytes { bytes ->
+            retained = bytes
+            assertEquals("4761739001010010", String(bytes, Charsets.US_ASCII))
+        }
+
+        assertTrue(assertNotNull(retained).all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `withBytes zeroes its buffer even when the block throws`() {
+        val pan = assertNotNull(Pan.of("4761739001010010"))
+        var retained: ByteArray? = null
+
+        assertFailsWith<IllegalStateException> {
+            pan.withBytes { bytes ->
+                retained = bytes
+                error("consumer blew up")
+            }
+        }
+
+        assertTrue(assertNotNull(retained).all { it == 0.toByte() })
+    }
+
+    @Test
+    fun `fromCompressedNumeric decodes tag 5A and drops the F padding`() {
+        val sixteen = assertNotNull(Pan.fromCompressedNumeric("4761739001010010".hexToBytes()))
+        assertEquals(16, sixteen.length)
+        assertEquals("0010", sixteen.last4)
+
+        // 15 digits, so tag 5A carries one 'F' nibble of padding.
+        val fifteen = assertNotNull(Pan.fromCompressedNumeric("378282246310005F".hexToBytes()))
+        assertEquals(15, fifteen.length)
+        assertEquals("0005", fifteen.last4)
+    }
 }
 
 class Track2DataTest {
@@ -170,6 +224,19 @@ class Track2DataTest {
         )
 
         assertFalse(track2.toString().contains("4761739001010010"))
+    }
+
+    @Test
+    fun `close wipes the pan and the discretionary data`() {
+        val track2 = assertNotNull(
+            Track2Data.parse("4761739001010010D25122010000000000000F".hexToBytes()),
+        )
+        val retained = track2.revealDiscretionary { it }
+
+        track2.close()
+
+        assertEquals("Pan(wiped)", track2.pan.toString())
+        assertTrue(retained.all { it.code == 0 })
     }
 }
 

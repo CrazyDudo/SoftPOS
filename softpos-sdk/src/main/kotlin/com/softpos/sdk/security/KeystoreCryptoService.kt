@@ -2,6 +2,7 @@ package com.softpos.sdk.security
 
 import android.os.Build
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Base64
@@ -10,9 +11,25 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.Mac
 import javax.crypto.SecretKey
+import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 
 class CryptoUnavailableException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/** Where a Keystore key's material actually lives. */
+enum class KeySecurityLevel {
+    /** Software only - no hardware is protecting the key. */
+    SOFTWARE,
+
+    /** Trusted Execution Environment, which is the usual case on most handsets. */
+    TRUSTED_ENVIRONMENT,
+
+    /** A discrete secure element, physically separate from the main SoC. */
+    STRONGBOX,
+
+    /** No key has been generated yet, or the platform declined to say. */
+    UNKNOWN,
+}
 
 /**
  * Hardware-backed cryptography for the small amount of card-derived data that reaches disk.
@@ -43,11 +60,53 @@ class KeystoreCryptoService(
         }
     }
 
-    /** True when the AES key is backed by a dedicated secure element rather than the TEE. */
-    fun isStrongBoxBacked(): Boolean = strongBoxInUse
+    /**
+     * Where the AES key actually lives, read from the key itself every time it is asked.
+     *
+     * It deliberately does not remember what happened at generation time. Generation happens once,
+     * on the first card read of the first run; every later launch finds the key already there. A
+     * remembered flag is therefore wrong on every run but the first, which is precisely the bug
+     * this replaced.
+     *
+     * Returns [KeySecurityLevel.UNKNOWN] when no key exists yet. It does not create one - asking
+     * where a key lives should not bring it into being.
+     *
+     * Known limitation below API 31: the platform exposes only "inside secure hardware", which is
+     * equally true of StrongBox and of the TEE. A StrongBox key on API 28-30 is therefore reported
+     * as [KeySecurityLevel.TRUSTED_ENVIRONMENT]. API 31 and above are exact.
+     */
+    fun keySecurityLevel(): KeySecurityLevel {
+        val key = existingAesKey() ?: return KeySecurityLevel.UNKNOWN
+        val info = runCatching {
+            SecretKeyFactory.getInstance(key.algorithm, ANDROID_KEYSTORE)
+                .getKeySpec(key, KeyInfo::class.java) as KeyInfo
+        }.getOrNull() ?: return KeySecurityLevel.UNKNOWN
 
-    @Volatile
-    private var strongBoxInUse: Boolean = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            return when (info.securityLevel) {
+                KeyProperties.SECURITY_LEVEL_STRONGBOX -> KeySecurityLevel.STRONGBOX
+                KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> KeySecurityLevel.TRUSTED_ENVIRONMENT
+                KeyProperties.SECURITY_LEVEL_SOFTWARE -> KeySecurityLevel.SOFTWARE
+                else -> KeySecurityLevel.UNKNOWN
+            }
+        }
+
+        @Suppress("DEPRECATION")
+        return if (info.isInsideSecureHardware) {
+            KeySecurityLevel.TRUSTED_ENVIRONMENT
+        } else {
+            KeySecurityLevel.SOFTWARE
+        }
+    }
+
+    /**
+     * True only when the AES key sits in a discrete secure element.
+     *
+     * Below API 31 StrongBox cannot be told apart from the TEE, so this reports false even where
+     * StrongBox is in fact in use. [keySecurityLevel] says so explicitly rather than collapsing the
+     * distinction into a boolean.
+     */
+    fun isStrongBoxBacked(): Boolean = keySecurityLevel() == KeySecurityLevel.STRONGBOX
 
     // -------------------------------------------------------------------------------------------
     // AES-256-GCM
@@ -107,10 +166,10 @@ class KeystoreCryptoService(
     // Key management
     // -------------------------------------------------------------------------------------------
 
-    private fun aesKey(): SecretKey {
-        (keyStore.getEntry(aesAlias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
-        return generateAesKey()
-    }
+    private fun existingAesKey(): SecretKey? =
+        (keyStore.getEntry(aesAlias, null) as? KeyStore.SecretKeyEntry)?.secretKey
+
+    private fun aesKey(): SecretKey = existingAesKey() ?: generateAesKey()
 
     private fun hmacKey(): SecretKey {
         (keyStore.getEntry(hmacAlias, null) as? KeyStore.SecretKeyEntry)?.let { return it.secretKey }
@@ -123,16 +182,13 @@ class KeystoreCryptoService(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
             try {
                 generator.init(aesSpec(strongBox = true))
-                val key = generator.generateKey()
-                strongBoxInUse = true
-                return key
+                return generator.generateKey()
             } catch (e: StrongBoxUnavailableException) {
                 // Expected on the majority of devices; fall through to a TEE-backed key.
             }
         }
 
         generator.init(aesSpec(strongBox = false))
-        strongBoxInUse = false
         return generator.generateKey()
     }
 
@@ -173,7 +229,6 @@ class KeystoreCryptoService(
     fun deleteKeys() {
         runCatching { keyStore.deleteEntry(aesAlias) }
         runCatching { keyStore.deleteEntry(hmacAlias) }
-        strongBoxInUse = false
     }
 
     private companion object {

@@ -1,5 +1,11 @@
 package com.softpos.emv.model
 
+import com.softpos.emv.cvm.CvmDecision
+import com.softpos.emv.cvm.CvmOutcome
+import com.softpos.emv.oda.CardAuthentication
+import com.softpos.emv.oda.OdaResult
+import com.softpos.emv.oda.OdaSkipReason
+import com.softpos.emv.terminal.PreProcessingIndicators
 import com.softpos.emv.tlv.TlvDatabase
 import com.softpos.emv.util.Hex
 import java.time.LocalDate
@@ -34,6 +40,16 @@ data class CardCandidate(
     override fun hashCode(): Int = aidHex.hashCode()
 }
 
+/** Application Interchange Profile, byte 1. EMV 4.4 Book 3, Annex C1. */
+object AipBits {
+    const val SDA_SUPPORTED = 0x40
+    const val DDA_SUPPORTED = 0x20
+    const val CVM_SUPPORTED = 0x10
+    const val TERMINAL_RISK_MANAGEMENT = 0x08
+    const val ISSUER_AUTHENTICATION_SUPPORTED = 0x04
+    const val CDA_SUPPORTED = 0x01
+}
+
 /**
  * Everything read from the card, including elements that identify the cardholder.
  *
@@ -55,19 +71,32 @@ class RawCardData(
     val aip: ByteArray?,
     val afl: List<AflEntry>,
     val tlv: TlvDatabase,
+    /** Offline data authentication outcome; see [com.softpos.emv.oda.OfflineDataAuthentication]. */
+    val authentication: OdaResult = OdaResult.NotPerformed(OdaSkipReason.DISABLED),
+    /** What cardholder verification the card asked for; nothing is performed here. */
+    val cvm: CvmDecision = CvmDecision.NotEvaluated,
+    /** Entry Point pre-processing indicators for the amount this read was made for. */
+    val preProcessing: PreProcessingIndicators? = null,
 ) : AutoCloseable {
 
     val aidHex: String get() = Hex.encode(aid)
 
-    /**
-     * Application Interchange Profile bit b7 of byte 1 - "Cardholder verification is supported".
-     * Reported for diagnostics; no CVM processing happens in this prototype.
-     */
-    val cvmSupported: Boolean? get() = aip?.takeIf { it.size >= 2 }?.let { (it[0].toInt() and 0x20) != 0 }
+    private fun aipByte1Has(mask: Int): Boolean? = aip?.takeIf { it.size >= 2 }?.let { (it[0].toInt() and mask) != 0 }
 
-    /** AIP byte 1 b6 - "Terminal risk management is to be performed". */
-    val terminalRiskManagementRequested: Boolean?
-        get() = aip?.takeIf { it.size >= 2 }?.let { (it[0].toInt() and 0x10) != 0 }
+    /** AIP byte 1 b7 - the card supports Static Data Authentication. */
+    val sdaSupported: Boolean? get() = aipByte1Has(AipBits.SDA_SUPPORTED)
+
+    /** AIP byte 1 b6 - the card supports Dynamic Data Authentication. */
+    val ddaSupported: Boolean? get() = aipByte1Has(AipBits.DDA_SUPPORTED)
+
+    /** AIP byte 1 b5 - "Cardholder verification is supported". */
+    val cvmSupported: Boolean? get() = aipByte1Has(AipBits.CVM_SUPPORTED)
+
+    /** AIP byte 1 b4 - "Terminal risk management is to be performed". */
+    val terminalRiskManagementRequested: Boolean? get() = aipByte1Has(AipBits.TERMINAL_RISK_MANAGEMENT)
+
+    /** AIP byte 1 b1 - the card supports Combined DDA / AC generation. */
+    val cdaSupported: Boolean? get() = aipByte1Has(AipBits.CDA_SUPPORTED)
 
     fun redact(
         policy: MaskPolicy = MaskPolicy.LAST_4,
@@ -85,6 +114,12 @@ class RawCardData(
         panLuhnValid = pan?.isLuhnValid(),
         cardholderNamePresent = !cardholderName.isNullOrBlank(),
         recordCount = afl.sumOf { it.recordCount },
+        authentication = authentication.summary(),
+        authenticationDetail = authentication.describe(),
+        cvm = cvm.outcome,
+        cvmDetail = cvm.detail,
+        cvmRequiredByReader = preProcessing?.cvmRequired ?: false,
+        onlineCryptogramRequired = preProcessing?.onlineCryptogramRequired ?: false,
     )
 
     /**
@@ -125,6 +160,14 @@ data class RedactedCard(
     val panLuhnValid: Boolean?,
     val cardholderNamePresent: Boolean,
     val recordCount: Int,
+    val authentication: CardAuthentication = CardAuthentication.NOT_PERFORMED,
+    val authenticationDetail: String = "",
+    val cvm: CvmOutcome = CvmOutcome.NOT_EVALUATED,
+    val cvmDetail: String = "",
+    /** The reader's own CVM Required Limit was reached (TTQ byte 2 b7 was set on the way out). */
+    val cvmRequiredByReader: Boolean = false,
+    /** The reader's floor limit was exceeded (TTQ byte 2 b8 was set on the way out). */
+    val onlineCryptogramRequired: Boolean = false,
 ) {
     val displayName: String get() = applicationLabel ?: scheme.displayName
 }

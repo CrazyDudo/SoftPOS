@@ -6,6 +6,8 @@ import com.softpos.emv.apdu.CommandApdu
 import com.softpos.emv.apdu.EmvCommands
 import com.softpos.emv.apdu.ResponseApdu
 import com.softpos.emv.apdu.StatusWord
+import com.softpos.emv.capk.CapkRegistry
+import com.softpos.emv.cvm.CardholderVerification
 import com.softpos.emv.model.AflEntry
 import com.softpos.emv.model.AflParser
 import com.softpos.emv.model.AidRegistry
@@ -16,19 +18,28 @@ import com.softpos.emv.model.ExpiryDate
 import com.softpos.emv.model.Pan
 import com.softpos.emv.model.RawCardData
 import com.softpos.emv.model.Track2Data
+import com.softpos.emv.oda.OdaInput
+import com.softpos.emv.oda.OdaResult
+import com.softpos.emv.oda.OfflineDataAuthentication
+import com.softpos.emv.terminal.EntryPointPreProcessing
+import com.softpos.emv.terminal.PreProcessingIndicators
 import com.softpos.emv.terminal.TerminalProfile
 import com.softpos.emv.tlv.BerTlvParser
 import com.softpos.emv.tlv.ConstructedTlv
 import com.softpos.emv.tlv.DolBuilder
 import com.softpos.emv.tlv.DolParser
 import com.softpos.emv.tlv.EmvTags
+import com.softpos.emv.tlv.TagValueSource
 import com.softpos.emv.tlv.TlvDatabase
 import com.softpos.emv.tlv.TlvNode
 import com.softpos.emv.tlv.TlvParseException
 import com.softpos.emv.tlv.walk
 import com.softpos.emv.util.Hex
+import java.time.LocalDate
 
 enum class ReadStage {
+    /** Entry Point pre-processing, before the card is polled. */
+    ENTRY_POINT,
     PPSE_SELECT,
     CANDIDATE_SELECTION,
     APPLICATION_SELECT,
@@ -55,6 +66,12 @@ enum class ReadErrorCode {
 
     /** The tag went out of range, or the radio link dropped. */
     TRANSPORT_ERROR,
+
+    /**
+     * Entry Point pre-processing refused the amount before any exchange: it is at or above the
+     * reader's contactless transaction limit, or zero where zero is not allowed.
+     */
+    AMOUNT_NOT_ALLOWED,
 }
 
 sealed interface EmvReadResult {
@@ -100,45 +117,62 @@ data class ReadOptions(
 
     /** Guard against a malfunctioning or hostile card driving an unbounded read. */
     val maxRecordsToRead: Int = 64,
+
+    /**
+     * Verify SDA or fast DDA when the card supports it and a CA public key table is loaded.
+     * With an empty table this is a no-op reported as [com.softpos.emv.oda.OdaSkipReason.NO_CAPK_TABLE].
+     */
+    val performOfflineDataAuthentication: Boolean = true,
 )
 
 /**
- * Offline contactless read: PPSE, application selection, GET PROCESSING OPTIONS, READ RECORD.
+ * Offline contactless read: Entry Point pre-processing, PPSE, application selection, GET
+ * PROCESSING OPTIONS, READ RECORD, then offline data authentication and the CVM decision.
  *
- * Sequence follows EMV 4.4 Book 1 section 12.3 (application selection) and Book 3 section 10.1-10.2
- * (initiate application processing, read application data), with the contactless entry point
- * behaviour of EMV Contactless Book B section 3.3.
+ * Sequence follows EMV Contactless Book B section 3.1 (pre-processing) and 3.3 (entry point),
+ * EMV 4.4 Book 1 section 12.3 (application selection), Book 3 section 10.1-10.2 (initiate
+ * application processing, read application data), Book 2 sections 5 and 6 with the fast DDA of
+ * Contactless Book C-3 (offline data authentication) and Book 3 section 10.5 (CVM selection).
  *
  * ## What this deliberately does not do
  *
- * The flow stops after READ RECORD. It never issues GENERATE AC, so it produces no cryptogram and
- * reaches no approve or decline decision. That is a scope choice, not an omission to be filled in
- * casually - a terminal that generates an AC is performing a payment transaction.
+ * The flow never issues GENERATE AC, so it produces no cryptogram and reaches no approve or
+ * decline decision. That is a scope choice, not an omission to be filled in casually - a terminal
+ * that generates an AC is performing a payment transaction. It follows that CDA, whose signature
+ * covers the GENERATE AC response, cannot be verified here either.
  *
  * Also absent, each of which would need verification against physical cards before being trusted:
- *  - TODO Offline Data Authentication (SDA, DDA, CDA - EMV Book 2 sections 5, 6 and 6.6). The
- *    certificate elements are parsed into the TLV database but no signature is checked and no CA
- *    public key table exists. Nothing in this codebase may be read as evidence a card is genuine.
- *  - TODO Cardholder Verification Method processing (Book 3 section 10.5). The CVM list is read
- *    but not evaluated; no PIN is ever requested.
+ *  - Cardholder verification is decided, not performed: there is no PIN pad and no signature
+ *    capture, so the decision is reported on the card record for the caller to act on.
  *  - TODO Terminal Risk Management and Terminal Action Analysis (Book 3 sections 10.6 and 10.7).
  *  - TODO Multi-application conflict resolution beyond priority ordering. EMV Book 1 section 12.4
  *    requires cardholder confirmation when the Application Priority Indicator sets b8; the
  *    candidate exposes [CardCandidate.requiresCardholderConfirmation] but this flow does not
  *    prompt, it simply proceeds in priority order.
- *  - TODO Kernel-specific behaviour. Visa Kernel 3 and Mastercard Kernel 2 diverge sharply after
- *    GPO; the shared prefix implemented here is enough to read card data and no more.
+ *  - TODO Kernel-specific behaviour beyond fDDA and the CTQ. Visa Kernel 3 and Mastercard Kernel 2
+ *    diverge sharply after GPO; the shared prefix implemented here is enough to read and
+ *    authenticate card data and no more.
  */
 class EmvReadFlow(
     private val transceiver: ApduTransceiver,
     private val terminal: TerminalProfile,
     private val amountMinor: Long,
     private val registry: AidRegistry = AidRegistry.Default,
+    private val capkRegistry: CapkRegistry = CapkRegistry.Empty,
     private val options: ReadOptions = ReadOptions(),
 ) {
 
     private val trace = ApduTrace(enabled = options.traceApdu, redact = options.redactTrace)
     private val warnings = ArrayList<String>()
+
+    /** Book B section 3.1.1, computed once per read - it depends only on amount and configuration. */
+    private val preProcessing: PreProcessingIndicators = EntryPointPreProcessing.run(
+        amountMinor = amountMinor,
+        limits = terminal.readerLimits,
+        configuredTtq = Hex.decode(terminal.terminalTransactionQualifiers),
+    )
+
+    private val odaEnabled: Boolean = options.performOfflineDataAuthentication && !capkRegistry.isEmpty()
 
     /** Internal plumbing so intermediate steps can short-circuit without pretending to be a result. */
     private sealed interface Step<out T> {
@@ -147,6 +181,18 @@ class EmvReadFlow(
     }
 
     fun execute(): EmvReadResult {
+        // Book B 3.1.1.7 / 3.1.1.5: an amount the reader may not take over contactless is refused
+        // before the field is even used, so the cardholder is never asked to tap for nothing.
+        if (preProcessing.contactlessApplicationNotAllowed) {
+            return EmvReadResult.Failure(
+                stage = ReadStage.ENTRY_POINT,
+                code = ReadErrorCode.AMOUNT_NOT_ALLOWED,
+                message = "Amount $amountMinor is not allowed over the contactless interface " +
+                    "(${preProcessing.describe()})",
+                trace = trace,
+            )
+        }
+
         val candidates = try {
             buildCandidateList()
         } catch (e: ApduTransportException) {
@@ -321,15 +367,24 @@ class EmvReadFlow(
         }
 
         val collected = TlvDatabase.builder().putAll(fci).putAll(processing.db)
-        readRecords(processing.afl, collected)?.let { return it }
+        val staticData = OfflineDataAuthentication.StaticDataBuilder()
+        readRecords(processing.afl, collected, staticData)?.let { return it }
 
-        return extract(candidate, processing.aip, processing.afl, collected.build())
+        val db = collected.build()
+        val (staticBytes, staticIntact) = staticData.finish(db[EmvTags.SDA_TAG_LIST], processing.aip)
+
+        return extract(candidate, processing, db, staticBytes, staticIntact)
     }
 
     private class ProcessingOptions(
         val aip: ByteArray,
         val afl: List<AflEntry>,
         val db: TlvDatabase,
+        /**
+         * Unpredictable Number, Amount Authorised and Transaction Currency Code exactly as sent in
+         * the PDOL response - the terminal half of the fast DDA hash input (Contactless Book C-3).
+         */
+        val terminalDynamicData: ByteArray?,
     )
 
     /**
@@ -337,6 +392,16 @@ class EmvReadFlow(
      * application has no PDOL an empty `83` template is sent. EMV 4.4 Book 3, section 10.1.
      */
     private fun performGpo(candidate: CardCandidate, fci: TlvDatabase): Step<ProcessingOptions> {
+        // One source per GPO: it carries this exchange's Unpredictable Number, and the card will
+        // sign exactly the values it was sent, so the same object must feed both the PDOL and,
+        // later, the fast DDA verification.
+        val source: TagValueSource = terminal.tagSource(
+            amountMinor = amountMinor,
+            kernel = candidate.kernel.takeIf { it != EmvKernel.UNSUPPORTED } ?: EmvKernel.KERNEL_3,
+            ttq = preProcessing.ttq,
+            offlineDataAuthentication = odaEnabled,
+        )
+
         val pdolBytes = fci[EmvTags.PDOL]
         val pdolData = if (pdolBytes == null || pdolBytes.isEmpty()) {
             ByteArray(0)
@@ -346,12 +411,16 @@ class EmvReadFlow(
             } catch (e: TlvParseException) {
                 return gpoError(ReadErrorCode.MALFORMED_RESPONSE, "PDOL is malformed: ${e.message}")
             }
-            val source = terminal.tagSource(
-                amountMinor = amountMinor,
-                kernel = candidate.kernel.takeIf { it != EmvKernel.UNSUPPORTED } ?: EmvKernel.KERNEL_3,
-            )
             DolBuilder.build(entries, source)
         }
+
+        val terminalDynamicData = listOf(
+            EmvTags.UNPREDICTABLE_NUMBER,
+            EmvTags.AMOUNT_AUTHORISED,
+            EmvTags.TRANSACTION_CURRENCY_CODE,
+        ).map { source.valueOf(it) }
+            .takeIf { values -> values.all { it != null } }
+            ?.fold(ByteArray(0)) { acc, value -> acc + value!! }
 
         val response = transmit("GET PROCESSING OPTIONS", EmvCommands.getProcessingOptions(pdolData))
 
@@ -414,7 +483,7 @@ class EmvReadFlow(
             .apply { if (aflBytes.isNotEmpty()) put(EmvTags.AFL, aflBytes) }
             .build()
 
-        return Step.Ok(ProcessingOptions(aip, afl, enriched))
+        return Step.Ok(ProcessingOptions(aip, afl, enriched, terminalDynamicData))
     }
 
     private fun gpoError(
@@ -434,7 +503,11 @@ class EmvReadFlow(
     )
 
     /** Returns a [EmvReadResult.Failure] on a fatal problem, or null when reading completed. */
-    private fun readRecords(afl: List<AflEntry>, into: TlvDatabase.Builder): EmvReadResult.Failure? {
+    private fun readRecords(
+        afl: List<AflEntry>,
+        into: TlvDatabase.Builder,
+        staticData: OfflineDataAuthentication.StaticDataBuilder,
+    ): EmvReadResult.Failure? {
         var recordsRead = 0
 
         for (entry in afl) {
@@ -466,6 +539,13 @@ class EmvReadFlow(
                     continue
                 }
 
+                // Book 3 section 10.3: the records the AFL marks for offline data authentication
+                // are retained as returned, before any parsing, because the signature covers the
+                // bytes on the wire and not our interpretation of them.
+                if (recordNumber < entry.firstRecord + entry.odaRecordCount) {
+                    staticData.addRecord(entry.sfi, response.data)
+                }
+
                 // Records in SFI 1-10 are always wrapped in a 70 template; SFI 11-30 are issuer
                 // proprietary and need not be TLV at all. EMV 4.4 Book 3, section 10.2.
                 val nodes = BerTlvParser.parseOrEmpty(response.data)
@@ -474,13 +554,6 @@ class EmvReadFlow(
                     continue
                 }
                 into.putAll(nodes)
-
-                // TODO: records inside the ODA range would need to be retained verbatim and
-                //  concatenated to rebuild the Static Data Authentication input. Recorded here so
-                //  the gap is visible where it matters.
-                if (recordNumber < entry.firstRecord + entry.odaRecordCount) {
-                    // Intentionally no accumulation - see the ODA note in the class documentation.
-                }
             }
         }
         return null
@@ -492,10 +565,13 @@ class EmvReadFlow(
 
     private fun extract(
         candidate: CardCandidate,
-        aip: ByteArray,
-        afl: List<AflEntry>,
+        processing: ProcessingOptions,
         db: TlvDatabase,
+        staticData: ByteArray,
+        staticDataIntact: Boolean,
     ): EmvReadResult {
+        val aip = processing.aip
+        val afl = processing.afl
         val track2 = db[EmvTags.TRACK_2_EQUIVALENT_DATA]?.let { bytes ->
             Track2Data.parse(bytes).also {
                 if (it == null) warnings += "Track 2 Equivalent Data present but could not be parsed"
@@ -528,6 +604,36 @@ class EmvReadFlow(
         val scheme = candidate.scheme.takeIf { it != CardScheme.UNKNOWN }
             ?: pan.reveal { CardScheme.fromPanPrefix(it) }
 
+        // The CA public key is looked up by the RID - the first five bytes of the AID - and the
+        // index the card names in tag 8F. Everything else about authentication lives in the ODA
+        // package; the flow only assembles its input.
+        val authentication = OfflineDataAuthentication.authenticate(
+            input = OdaInput(
+                db = db,
+                aip = aip,
+                rid = candidate.aidHex.take(10),
+                pan = pan,
+                staticData = staticData,
+                staticDataIntact = staticDataIntact,
+                terminalDynamicData = processing.terminalDynamicData,
+            ),
+            capks = capkRegistry,
+            // The option alone, not odaEnabled: with the option on and no keys loaded the honest
+            // answer is "no CAPK table", and the authenticator reports exactly that.
+            enabled = options.performOfflineDataAuthentication,
+            today = LocalDate.now(terminal.clock),
+        )
+        if (authentication is OdaResult.Failed) {
+            warnings += "Offline data authentication: ${authentication.describe()}"
+        }
+
+        val cvm = CardholderVerification.decide(
+            kernel = scheme.kernel,
+            db = db,
+            amountMinor = amountMinor,
+            transactionCurrencyCode = terminal.currencyCode,
+        )
+
         val card = RawCardData(
             aid = candidate.aid,
             applicationLabel = db.text(EmvTags.APPLICATION_LABEL) ?: candidate.label,
@@ -542,6 +648,9 @@ class EmvReadFlow(
             aip = aip,
             afl = afl,
             tlv = db,
+            authentication = authentication,
+            cvm = cvm,
+            preProcessing = preProcessing,
         )
         return EmvReadResult.Success(card, warnings.toList(), trace)
     }

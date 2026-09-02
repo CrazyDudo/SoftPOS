@@ -18,6 +18,8 @@ import com.softpos.sdk.peripheral.UnavailablePeripheral
 import com.softpos.sdk.repository.CatalogRepository
 import com.softpos.sdk.repository.TransactionRepository
 import com.softpos.sdk.security.CardVault
+import com.softpos.sdk.security.DeviceIntegrity
+import com.softpos.sdk.security.IntegrityReport
 import com.softpos.sdk.security.KeySecurityLevel
 import com.softpos.sdk.security.KeystoreCryptoService
 import java.time.Clock
@@ -36,11 +38,19 @@ data class SoftPosConfig(
     /**
      * Certification Authority Public Keys.
      *
-     * Empty by default, and nothing reads it: this project performs no offline data authentication,
-     * so a populated table changes no behaviour. See [CapkRegistry] for where real keys come from
-     * and how to validate them.
+     * Empty by default, in which case every read reports authentication as not performed. With
+     * keys loaded, a card that supports SDA or fast DDA is verified against them and the result
+     * lands on [com.softpos.emv.model.RedactedCard.authentication]. See [CapkRegistry] for where
+     * real keys come from and how to validate them before loading.
      */
     val capkRegistry: CapkRegistry = CapkRegistry.Empty,
+
+    /**
+     * Verify SDA and fast DDA when the card supports them and [capkRegistry] is not empty.
+     * Switching this off leaves the certificates parsed but unchecked, as versions before 0.2.0
+     * always did.
+     */
+    val performOfflineDataAuthentication: Boolean = true,
 
     /** How much of the PAN survives into storage and onto the screen. */
     val maskPolicy: MaskPolicy = MaskPolicy.LAST_4,
@@ -122,6 +132,7 @@ data class SoftPosConfig(
  * payments. See [com.softpos.emv.flow.EmvReadFlow] for the specific EMV functions left out.
  */
 class SoftPos private constructor(
+    private val appContext: Context,
     val config: SoftPosConfig,
     val database: SoftPosDatabase,
     val crypto: KeystoreCryptoService,
@@ -152,6 +163,12 @@ class SoftPos private constructor(
     fun formatAmount(minorUnits: Long): String = config.terminalProfile.formatAmount(minorUnits)
 
     /**
+     * Local signals about the device this SDK is running on - root indicators, emulator, debugger,
+     * developer settings, key storage. See [DeviceIntegrity] for what this is and is not.
+     */
+    fun deviceIntegrity(): IntegrityReport = DeviceIntegrity.assess(appContext, crypto)
+
+    /**
      * Destroys the Keystore keys and clears the transaction history.
      *
      * Every stored fingerprint and every encrypted blob becomes permanently unreadable, because the
@@ -177,6 +194,7 @@ class SoftPos private constructor(
             val vault = CardVault(crypto, config)
 
             return SoftPos(
+                appContext = context.applicationContext,
                 config = config,
                 database = database,
                 crypto = crypto,

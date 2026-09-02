@@ -131,6 +131,7 @@ class NfcCardReader(
             traceApdu = config.traceApdu,
             redactTrace = config.redactApduTrace,
             strictAflReads = config.strictAflReads,
+            performOfflineDataAuthentication = config.performOfflineDataAuthentication,
         )
 
         try {
@@ -142,6 +143,7 @@ class NfcCardReader(
                     terminal = config.terminalProfile,
                     amountMinor = amountMinor,
                     registry = config.aidRegistry,
+                    capkRegistry = config.capkRegistry,
                     options = options,
                 ).execute()
 
@@ -156,8 +158,11 @@ class NfcCardReader(
                         log(
                             "Read OK in ${elapsed}ms: ${captured.card.scheme.displayName} " +
                                 "${captured.card.maskedPan} exp=${captured.card.expiry} " +
-                                "aid=${captured.card.aidHex} records=${captured.card.recordCount}",
+                                "aid=${captured.card.aidHex} records=${captured.card.recordCount} " +
+                                "auth=${captured.card.authentication} cvm=${captured.card.cvm}",
                         )
+                        log("  authentication: ${captured.card.authenticationDetail}")
+                        log("  cvm: ${captured.card.cvmDetail}")
                         result.warnings.forEach { log("  warning: $it", warn = true) }
                         trace?.let { log(it) }
                         emit(CardReadEvent.Completed(captured, result.warnings, trace))

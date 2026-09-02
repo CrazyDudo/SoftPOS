@@ -43,8 +43,9 @@ data class TerminalProfile(
      *    Kernel 2 signals contactless separately through DF8117.
      *  - byte 2 CVM             : 0x08 - "no CVM required". This reader performs no cardholder
      *    verification at all, so no PIN or signature bit is claimed.
-     *  - byte 3 security        : 0x00 - no SDA, no DDA, no CDA. Setting any of these would assert
-     *    an offline authentication capability this code does not have.
+     *  - byte 3 security        : 0x00 here. SDA (b8) and DDA (b7) are switched on per read by
+     *    [terminalCapabilities] when a CA public key table is loaded and authentication is
+     *    enabled; CDA is never claimed because it needs GENERATE AC.
      */
     val terminalCapabilities: String = "200800",
 
@@ -64,6 +65,12 @@ data class TerminalProfile(
      *  - byte 4 : RFU.
      */
     val terminalTransactionQualifiers: String = "28000000",
+
+    /**
+     * Reader amount limits for Entry Point pre-processing (EMV Contactless Book B section 3.1).
+     * Null means no limits: every amount is accepted and the TTQ goes out as configured.
+     */
+    val readerLimits: ReaderLimits? = null,
 
     /** Application Version Number (9F09) per kernel. */
     val visaApplicationVersion: String = "0096",
@@ -85,6 +92,10 @@ data class TerminalProfile(
      * @param amountMinor Amount, Authorised (9F02) in minor units.
      * @param otherAmountMinor Amount, Other (9F03) - cashback. Always zero in this prototype.
      * @param transactionType Transaction Type (9C). 0x00 = purchase of goods and services.
+     * @param ttq the Terminal Transaction Qualifiers to send, normally the output of Entry Point
+     *   pre-processing; null sends the configured value unchanged.
+     * @param offlineDataAuthentication whether this read will verify SDA and DDA, which decides
+     *   what Terminal Capabilities byte 3 may claim.
      */
     fun tagSource(
         amountMinor: Long,
@@ -92,6 +103,8 @@ data class TerminalProfile(
         otherAmountMinor: Long = 0,
         transactionType: Int = 0x00,
         sequenceCounter: Int = 1,
+        ttq: ByteArray? = null,
+        offlineDataAuthentication: Boolean = false,
     ): TagValueSource {
         val now = LocalDateTime.now(clock)
         val date = longToBcd(
@@ -111,9 +124,9 @@ data class TerminalProfile(
             put(EmvTags.TRANSACTION_TYPE, byteArrayOf(transactionType.toByte()))
             put(EmvTags.UNPREDICTABLE_NUMBER, unpredictable)
             put(EmvTags.TERMINAL_TYPE, byteArrayOf(terminalType.toByte()))
-            put(EmvTags.TERMINAL_CAPABILITIES, Hex.decode(terminalCapabilities))
+            put(EmvTags.TERMINAL_CAPABILITIES, terminalCapabilities(offlineDataAuthentication))
             put(EmvTags.ADDITIONAL_TERMINAL_CAPABILITIES, Hex.decode(additionalTerminalCapabilities))
-            put(EmvTags.TERMINAL_TRANSACTION_QUALIFIERS, Hex.decode(terminalTransactionQualifiers))
+            put(EmvTags.TERMINAL_TRANSACTION_QUALIFIERS, ttq ?: Hex.decode(terminalTransactionQualifiers))
 
             // Terminal Verification Results start clear; nothing in the read-only flow sets a bit.
             put(EmvTags.TVR, ByteArray(5))
@@ -148,11 +161,32 @@ data class TerminalProfile(
         return TagValueSource { tag -> values[tag] }
     }
 
+    /**
+     * Terminal Capabilities (9F33) as sent. Byte 3 claims SDA (b8) and DDA (b7) only when this
+     * read will actually verify them - a terminal must not advertise a check it will not make,
+     * because the card and the issuer's risk parameters take the claim at face value.
+     */
+    fun terminalCapabilities(offlineDataAuthentication: Boolean): ByteArray {
+        val bytes = Hex.decode(terminalCapabilities)
+        if (offlineDataAuthentication && bytes.size >= 3) {
+            bytes[2] = (bytes[2].toInt() or CAPABILITY_SDA or CAPABILITY_DDA).toByte()
+        }
+        return bytes
+    }
+
     fun formatAmount(minorUnits: Long): String {
         if (currencyExponent == 0) return minorUnits.toString()
         val divisor = generateSequence(1L) { it * 10 }.elementAt(currencyExponent)
         val major = minorUnits / divisor
         val minor = minorUnits % divisor
         return "$major." + minor.toString().padStart(currencyExponent, '0')
+    }
+
+    private companion object {
+        /** 9F33 byte 3 b8. */
+        const val CAPABILITY_SDA = 0x80
+
+        /** 9F33 byte 3 b7. */
+        const val CAPABILITY_DDA = 0x40
     }
 }
